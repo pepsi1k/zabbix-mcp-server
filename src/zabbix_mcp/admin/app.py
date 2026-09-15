@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -299,6 +300,13 @@ class _CsrfMiddleware:
 # disabled - callers treat that as a no-op.
 _LIVE_ADMIN_APP: "AdminApp | None" = None
 
+# Filesystem timestamp granularity, in seconds. Kernels stamp mtime from a
+# coarse clock, so a write can land in the same granule as the stat that
+# preceded it and leave st_mtime byte-identical. 1s is generous enough to
+# cover the coarse filesystems (ext3, HFS+, NFS) as well as the sub-tick
+# case on ext4.
+_MTIME_GRANULARITY = 1.0
+
 
 def refresh_config_baseline() -> None:
     """Re-snapshot config.toml as the new 'no restart needed' baseline.
@@ -442,9 +450,16 @@ class AdminApp:
             mtime = _stat(self.config_path).st_mtime
         except Exception:
             return self.restart_needed
-        if mtime == self._config_dump_mtime:
+        if (
+            mtime == self._config_dump_mtime
+            and (time.time() - mtime) > _MTIME_GRANULARITY
+        ):
             # File unchanged since last check; reuse last result by
-            # falling through to the explicit flag.
+            # falling through to the explicit flag. Equal mtimes only
+            # prove "unchanged" once the stamp is old enough that a
+            # same-granule write can no longer hide behind it -
+            # otherwise the detector would go permanently blind to an
+            # edit that landed in the same tick as the snapshot.
             return self.restart_needed
         # File changed - re-parse and compare.
         self._config_dump_mtime = mtime

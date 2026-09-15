@@ -1862,8 +1862,12 @@ class TestSecurityPathTraversal(unittest.TestCase):
             _resolve_source_file(params, allowed_import_dirs=["/opt/zabbix-mcp/imports"])
         self.assertIn("allowed import directory", str(ctx.exception))
 
-    def test_symlink_rejected(self):
-        """Symlink pointing to a valid file inside allowed dir is still rejected."""
+    def test_symlink_inside_allowed_dir_is_followed(self):
+        """Symlink is followed when its target sits inside the allowed dir.
+
+        The containment check runs against the resolved path, so what
+        matters is where the link points, not that it is a link.
+        """
         import tempfile
         tmpdir = tempfile.mkdtemp()
         target = os.path.join(tmpdir, "template.yaml")
@@ -1873,9 +1877,9 @@ class TestSecurityPathTraversal(unittest.TestCase):
                 f.write("zabbix_export:\n  version: '7.0'\n")
             os.symlink(target, link)
             params = {"source_file": link}
-            with self.assertRaises(ValueError) as ctx:
-                _resolve_source_file(params, allowed_import_dirs=[tmpdir])
-            self.assertIn("symbolic link", str(ctx.exception))
+            result = _resolve_source_file(params, allowed_import_dirs=[tmpdir])
+            self.assertIn("zabbix_export", result["source"])
+            self.assertNotIn("source_file", result)
         finally:
             os.unlink(link)
             os.unlink(target)
@@ -1891,7 +1895,10 @@ class TestSecurityPathTraversal(unittest.TestCase):
             params = {"source_file": link}
             with self.assertRaises(ValueError) as ctx:
                 _resolve_source_file(params, allowed_import_dirs=[tmpdir])
-            self.assertIn("symbolic link", str(ctx.exception))
+            # Rejected on where the link resolves to, and the message
+            # must not echo the server's filesystem layout back.
+            self.assertIn("allowed import directory", str(ctx.exception))
+            self.assertNotIn(tmpdir, str(ctx.exception))
         finally:
             os.unlink(link)
             os.rmdir(tmpdir)

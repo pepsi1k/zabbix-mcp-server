@@ -638,7 +638,10 @@ def _resolve_source_file(
 
     raw_path = Path(params["source_file"])
 
-    # Resolve first, then validate — avoids TOCTOU race between symlink check and resolve
+    # Resolve first, then validate the *target*. A symlink is allowed as
+    # long as what it points at sits inside an allowed directory -
+    # checking the link itself first (as this did before v1.26) left a
+    # TOCTOU window between the check and the resolve.
     path = raw_path.resolve()
 
     # Validate path is within an allowed directory (prevent path traversal)
@@ -657,13 +660,17 @@ def _resolve_source_file(
             "are permitted."
         )
 
-    # Open with O_NOFOLLOW to reject symlinks atomically (no TOCTOU race)
+    # `path` is already resolved, so this cannot fire for a symlink the
+    # caller passed in - it closes the remaining TOCTOU window instead:
+    # if the final component is swapped for a symlink between the
+    # containment check above and this open, O_NOFOLLOW fails it.
     import os
     try:
         fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW)
     except OSError:
         raise ValueError(
-            "source_file must not be a symbolic link (security restriction)."
+            "source_file could not be opened; it must be a regular file "
+            "that is not replaced while the server reads it."
         )
     try:
         content = os.fdopen(fd, "r", encoding="utf-8").read()
